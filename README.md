@@ -17,7 +17,7 @@ breaks `termux-usb`). Then:
 
 ```sh
 pkg install git clang make pkg-config libusb termux-api
-git clone <this repo> && cd nanoterm
+git clone https://github.com/allextraszza1488/nanoterm && cd nanoterm
 make install-termux
 ```
 
