@@ -36,7 +36,10 @@ while [ $# -gt 0 ]; do
         *) args+=("$1"); shift ;;
     esac
 done
-[ ${#args[@]} -gt 0 ] && printf '%s\0' "${args[@]}" > "$tmp/args" || : > "$tmp/args"
+: > "$tmp/args"
+if [ ${#args[@]} -gt 0 ]; then
+    printf '%s\0' "${args[@]}" > "$tmp/args"
+fi
 export NANOTERM_ARGFILE="$tmp/args"
 
 dev="$(termux-usb -l | grep -o '/dev/bus/usb/[0-9]*/[0-9]*' | head -n 1 || true)"
