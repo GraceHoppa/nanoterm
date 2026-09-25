@@ -16,7 +16,10 @@ say()  { printf '\033[1m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[33m[!] %s\033[0m\n' "$*" >&2; }
 in_distro() { proot-distro login "$DISTRO" -- bash -c "$1"; }
 
-[ -n "${PREFIX:-}" ] && [ -d "$PREFIX" ] || { echo "run this inside Termux" >&2; exit 1; }
+if [ -z "${PREFIX:-}" ] || [ ! -d "$PREFIX" ]; then
+    echo "run this inside Termux" >&2
+    exit 1
+fi
 
 say "Termux packages"
 pkg install -y git clang make pkg-config libusb termux-api proot-distro
