@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# arduino-cli for Termux: runs the real one inside a proot-distro Debian
+# (Arduino's compiler toolchain is built for glibc and won't run on
+# Android's libc directly), in the current directory -- so
+# `arduino-cli compile .` just works from a sketch folder.
+#
+# The Termux home (and the current directory, if it's elsewhere) is bound
+# into the container at the same path, so file paths and the build output
+# are the same on both sides. The container's own /root stays put: that's
+# where arduino-cli and the board cores live.
+#
+# Uploading can't happen in there -- proot has no USB access. Use
+# `nt -u build/<sketch>.ino.hex` for that.
+set -eu
+
+DISTRO="${NANOTERM_DISTRO:-debian}"
+REAL=/root/bin/arduino-cli
+
+binds=(--bind "$HOME:$HOME")
+case "$PWD/" in
+    "$HOME"/*) ;;
+    *) binds+=(--bind "$PWD:$PWD") ;;
+esac
+
+exec proot-distro login "$DISTRO" "${binds[@]}" --work-dir "$PWD" -- "$REAL" "$@"
