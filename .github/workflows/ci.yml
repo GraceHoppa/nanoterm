@@ -1,0 +1,31 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install libusb
+        run: sudo apt-get update && sudo apt-get install -y libusb-1.0-0-dev pkg-config
+      - name: Build
+        run: make CC=${{ matrix.cc }}
+      - name: Unit tests
+        run: make test CC=${{ matrix.cc }}
+      - name: Unit tests (AddressSanitizer + UBSan)
+        run: |
+          make clean
+          make test CC=${{ matrix.cc }} \
+            CFLAGS="-O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all" \
+            LDFLAGS="-fsanitize=address,undefined"
+      - name: Shell scripts
+        run: |
+          sudo apt-get install -y shellcheck
+          shellcheck termux/*

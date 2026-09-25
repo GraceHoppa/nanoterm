@@ -1,3 +1,7 @@
 nanoterm
+tests/test_ihex
+tests/test_stk500
+tests/test_divisor
 *.o
 *.log
+build/

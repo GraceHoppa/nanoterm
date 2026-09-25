@@ -1,0 +1,58 @@
+#!/data/data/com.termux/files/usr/bin/bash
+# nt: run nanoterm on the Arduino plugged into this phone (Termux).
+#
+#   nt                  serial terminal
+#   nt -t               ...with timestamps
+#   nt -u sketch.hex    upload
+#   nt -u sketch.hex -m upload, then stay connected
+#
+# Takes every nanoterm option (see `nanoterm -h`). Finds the board, asks
+# Android for USB permission if needed, and hands nanoterm the device.
+set -eu
+
+NANOTERM="${NANOTERM:-$(command -v nanoterm || echo "$HOME/nanoterm")}"
+[ -x "$NANOTERM" ] || { echo "nt: nanoterm not found (make install-termux)" >&2; exit 1; }
+
+# Options that don't touch the board: answer directly, no USB dance.
+for a in "$@"; do
+    case "$a" in
+        -h|-V) exec "$NANOTERM" "$a" ;;
+    esac
+done
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+# termux-usb -e takes a single command word, so the arguments travel in a
+# NUL-separated file. File paths are made absolute first: nanoterm is
+# started by the Termux:API app and not necessarily in this directory.
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -u|-l)
+            [ $# -ge 2 ] || { echo "nt: $1 needs a file" >&2; exit 2; }
+            if [ "$1" = -u ] && [ ! -f "$2" ]; then echo "nt: $2: no such file" >&2; exit 1; fi
+            args+=("$1" "$(realpath -m "$2")"); shift 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+[ ${#args[@]} -gt 0 ] && printf '%s\0' "${args[@]}" > "$tmp/args" || : > "$tmp/args"
+export NANOTERM_ARGFILE="$tmp/args"
+
+dev="$(termux-usb -l | grep -o '/dev/bus/usb/[0-9]*/[0-9]*' | head -n 1 || true)"
+if [ -z "$dev" ]; then
+    echo "nt: no USB device found -- is the board plugged in and the phone unlocked?" >&2
+    exit 1
+fi
+termux-usb -r "$dev" >/dev/null || { echo "nt: USB permission denied for $dev" >&2; exit 1; }
+
+# termux-usb -e always exits 0 whatever its command returned; nanoterm
+# writes its real exit code to $NANOTERM_STATUS so it can be passed on
+# (and `nt -u x.hex && ...` stops after a failed upload). It may print a
+# "command substitution: ignored null byte" warning at exit: harmless, and
+# not filtered, since piping stderr through grep would hold back nanoterm's
+# live output (the upload progress redraws one line with \r).
+export NANOTERM_STATUS="$tmp/status"
+termux-usb -E -e "$NANOTERM" "$dev" || true
+status="$(cat "$NANOTERM_STATUS" 2>/dev/null || true)"
+exit "${status:-1}"
