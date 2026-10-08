@@ -1,18 +1,25 @@
 // nanoterm: serial terminal + sketch uploader for CH340-based Arduino
-// clones, talking to the USB chip directly through libusb. That is what lets
-// it run unrooted in Termux on Android (via termux-usb), as well as on Linux.
+// clones, and a read-only-first Betaflight CLI for flight controllers (USB
+// CDC ACM), talking to the USB chip directly through libusb. That is what
+// lets it run unrooted in Termux on Android (via termux-usb), as well as on
+// Linux.
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
+#include "betaflight.h"
+#include "cdcacm.h"
 #include "ch340.h"
 #include "ihex.h"
 #include "stk500.h"
 #include "term.h"
 
-#define NANOTERM_VERSION "0.2.0"
+#define NANOTERM_VERSION "0.3.0"
+
+// Seconds a one-shot Betaflight command may take, prompt to prompt.
+#define ONESHOT_SECS 20
 
 static int quiet;
 
@@ -43,6 +50,14 @@ static void usage(FILE *f) {
           "            57600 for Nanos with the \"old bootloader\"\n"
           "  -m        after uploading, stay connected as a terminal\n"
           "  -v        log the upload byte by byte (for debugging a board)\n"
+          "\n"
+          "Betaflight flight controller (USB, props off):\n"
+          "  -c        open the Betaflight CLI. Read-only: diff, dump, status,\n"
+          "            get, version... go through; anything that changes the\n"
+          "            FC (set, save, exit, defaults...) is refused\n"
+          "  -C CMD    run one read-only CLI command and exit, e.g.\n"
+          "            -C \"diff all\" -l fc-diff.txt\n"
+          "  -W        with -c: allow changes, each one confirmed with y\n"
           "\n"
           "  -q        quiet: no [nanoterm] status lines\n"
           "  -V        print version\n"
@@ -119,8 +134,14 @@ int main(int argc, char **argv) {
     const char *argfile = getenv("NANOTERM_ARGFILE");
     if (argfile && *argfile) argv = argfile_argv(argfile, argv[0], &argc);
 
-    while ((opt = getopt(argc, argv, "b:txe:l:nd:u:U:mvqVh")) != -1) {
+    while ((opt = getopt(argc, argv, "b:txe:l:nd:u:U:mvqVhcC:W")) != -1) {
         switch (opt) {
+        case 'c': to.betaflight = 1; break;
+        case 'C':
+            to.betaflight = 1;
+            to.oneshot = optarg;
+            break;
+        case 'W': to.allow_writes = 1; break;
         case 'b': baud = num_arg(optarg, 'b'); break;
         case 't': to.timestamps = 1; break;
         case 'x': to.hex = 1; break;
@@ -150,6 +171,33 @@ int main(int argc, char **argv) {
     if (!ch340_divisor(baud) || !ch340_divisor(upload_baud)) {
         fprintf(stderr, "nanoterm: baud rate out of range (46..3000000)\n");
         return finish(2);
+    }
+    if (to.betaflight && hexpath) {
+        fprintf(stderr, "nanoterm: -c/-C and -u don't go together (flash Betaflight with its own app)\n");
+        return finish(2);
+    }
+    if (to.allow_writes && !to.betaflight) {
+        fprintf(stderr, "nanoterm: -W only applies to the Betaflight CLI (-c)\n");
+        return finish(2);
+    }
+    // A one-shot command can't be confirmed, so it has to be read-only --
+    // checked here, before the flight controller is touched.
+    if (to.oneshot) {
+        bf_kind k = bf_classify(to.oneshot, strlen(to.oneshot));
+        if (k == BF_EMPTY) {
+            fprintf(stderr, "nanoterm: -C needs a command, e.g. -C \"diff all\"\n");
+            return finish(2);
+        }
+        if (k == BF_WRITE) {
+            fprintf(stderr, "nanoterm: -C '%s' would change the flight controller; one-shot commands are "
+                            "read-only (use -c -W to confirm changes by hand)\n", to.oneshot);
+            return finish(2);
+        }
+        if (!to.duration) to.duration = ONESHOT_SECS;
+    }
+    if (to.betaflight) {
+        baud = 115200; // ignored by USB flight controllers; the UART-bridge ones run at this
+        no_reset = 1;  // DTR pulses would reboot some boards
     }
 
     int fd = -1;
@@ -188,15 +236,40 @@ int main(int argc, char **argv) {
         return finish(1);
     }
 
+    // A CH340 first (Arduino clones, some old flight controllers), then any
+    // USB CDC ACM device (Betaflight/INAV flight controllers, native-USB boards).
     ch340 c;
-    if (ch340_open(&c, fd, err, sizeof err) < 0) {
+    cdcacm a;
+    int acm = 0;
+    int r = ch340_open(&c, fd, err, sizeof err);
+    if (r == -2) {
+        char err2[200];
+        r = cdcacm_open(&a, fd, err2, sizeof err2);
+        if (r == 0) acm = 1;
+        else if (r == -2) snprintf(err, sizeof err, "no supported board found: not a CH340, and %s", err2);
+        else snprintf(err, sizeof err, "%s", err2);
+    }
+    if (r < 0) {
         fprintf(stderr, "[nanoterm] %s\n", err);
+        if (to.log) fclose(to.log);
         return finish(1);
     }
-    port *p = &c.base;
+    port *p = acm ? &a.base : &c.base;
     int code = 0;
 
-    if (hexpath) {
+    if (acm) {
+        if (hexpath) {
+            fprintf(stderr, "[nanoterm] uploading only works for CH340 boards (STK500 bootloader)\n");
+            code = 1;
+            goto out;
+        }
+        // DTR on: most native-USB sketches wait for it before printing.
+        if (cdcacm_configure(&a, baud, PORT_DTR) < 0) {
+            fprintf(stderr, "[nanoterm] can't configure the USB serial device\n");
+            code = 1;
+            goto out;
+        }
+    } else if (hexpath) {
         if (ch340_configure(&c, upload_baud, 0) < 0) {
             fprintf(stderr, "[nanoterm] can't configure the USB serial chip\n");
             code = 1;
@@ -225,13 +298,24 @@ int main(int argc, char **argv) {
         if (!no_reset) board_reset(p);
     }
 
-    info("[nanoterm] %u baud%s%s%s%s -- type to send, Ctrl+C to quit\n", baud,
-         to.timestamps ? ", timestamps" : "", to.hex ? ", hex" : "",
-         to.log ? ", logging to " : "", to.log ? logpath : "");
+    if (to.oneshot)
+        info("[nanoterm] Betaflight CLI: %s%s%s\n", to.oneshot, to.log ? ", logging to " : "",
+             to.log ? logpath : "");
+    else if (to.betaflight)
+        info("[nanoterm] Betaflight CLI, %s%s%s -- Ctrl+C to quit. Props off.\n",
+             to.allow_writes ? "changes allowed after a y" : "read-only", to.log ? ", logging to " : "",
+             to.log ? logpath : "");
+    else
+        info("[nanoterm] %u baud%s%s%s%s -- type to send, Ctrl+C to quit\n", baud,
+             to.timestamps ? ", timestamps" : "", to.hex ? ", hex" : "",
+             to.log ? ", logging to " : "", to.log ? logpath : "");
     if (term_run(p, &to) < 0) code = 1;
+    // Leaving the CLI with `exit` reboots the FC; unplugging is the read-only way out.
+    if (to.betaflight) info("\n[nanoterm] the flight controller stays in CLI mode until you unplug it\n");
 
 out:
-    ch340_close(&c);
+    if (acm) cdcacm_close(&a);
+    else ch340_close(&c);
     if (to.log) fclose(to.log);
     return finish(code);
 }

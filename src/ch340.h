@@ -21,7 +21,8 @@ typedef struct {
 
 // Open the chip. fd >= 0: an already-open usbfs descriptor (termux-usb);
 // fd < 0: find the first CH340/CH341 on the bus (Linux). On failure returns
-// -1 and puts a human-readable reason in err.
+// -1, or -2 if the device isn't a CH340 (or none is plugged in), and puts a
+// human-readable reason in err.
 int ch340_open(ch340 *c, int fd, char *err, size_t errlen);
 
 // Initialise the UART: baud rate, 8N1, and the DTR/RTS state (pass

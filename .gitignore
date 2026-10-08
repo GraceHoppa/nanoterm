@@ -5,3 +5,5 @@ tests/test_divisor
 *.o
 *.log
 build/
+tests/test_betaflight
+tests/test_cdcacm
