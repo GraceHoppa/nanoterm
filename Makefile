@@ -6,7 +6,7 @@ CFLAGS += -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Wshadow -Wformat=2
 LIBUSB_CFLAGS := $(shell pkg-config --cflags libusb-1.0)
 LIBUSB_LIBS := $(shell pkg-config --libs libusb-1.0)
 
-SRC := src/main.c src/ch340.c src/ihex.c src/stk500.c src/term.c
+SRC := src/main.c src/ch340.c src/cdcacm.c src/betaflight.c src/ihex.c src/stk500.c src/term.c
 HDR := $(wildcard src/*.h)
 
 nanoterm: $(SRC) $(HDR)
@@ -14,7 +14,7 @@ nanoterm: $(SRC) $(HDR)
 
 # Unit tests: no board needed. The upload test runs the real STK500 code
 # against a simulated optiboot (tests/fake_optiboot.c).
-TESTS := tests/test_ihex tests/test_stk500 tests/test_divisor
+TESTS := tests/test_ihex tests/test_stk500 tests/test_divisor tests/test_betaflight tests/test_cdcacm
 
 tests/test_ihex: tests/test_ihex.c src/ihex.c src/ihex.h tests/check.h
 	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_ihex.c src/ihex.c
@@ -24,6 +24,12 @@ tests/test_stk500: tests/test_stk500.c tests/fake_optiboot.c tests/fake_optiboot
 
 tests/test_divisor: tests/test_divisor.c src/ch340.c src/ch340.h tests/check.h
 	$(CC) $(CFLAGS) $(LIBUSB_CFLAGS) -Isrc -o $@ tests/test_divisor.c src/ch340.c $(LIBUSB_LIBS) -lm
+
+tests/test_betaflight: tests/test_betaflight.c src/betaflight.c src/betaflight.h tests/check.h
+	$(CC) $(CFLAGS) -Isrc -o $@ tests/test_betaflight.c src/betaflight.c
+
+tests/test_cdcacm: tests/test_cdcacm.c src/cdcacm.c src/cdcacm.h tests/check.h
+	$(CC) $(CFLAGS) $(LIBUSB_CFLAGS) -Isrc -o $@ tests/test_cdcacm.c src/cdcacm.c $(LIBUSB_LIBS)
 
 test: $(TESTS)
 	@set -e; for t in $(TESTS); do ./$$t; done

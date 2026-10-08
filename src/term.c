@@ -4,13 +4,32 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
+#include "betaflight.h"
+
 static volatile sig_atomic_t stop;
 static int device_error;
+
+// Betaflight's CLI prompt is "\r\n# ". Comment lines in `diff` output also
+// start with "# ", so the prompt only counts once the output has gone quiet.
+#define PROMPT_QUIET_MS 400
+static _Atomic long last_rx_ms;
+static _Atomic int at_prompt;
+
+static long now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+}
+
+static int prompt_ready(void) {
+    return at_prompt && now_ms() - last_rx_ms >= PROMPT_QUIET_MS;
+}
 
 static void on_signal(int sig) {
     (void)sig;
@@ -68,6 +87,7 @@ typedef struct {
 static void *reader(void *arg) {
     reader_args *a = arg;
     unsigned char buf[64];
+    char tail[3] = { 0 }; // the last three bytes received
     while (!stop) {
         int n = a->p->read(a->p, buf, sizeof buf, 200);
         if (n < 0) {
@@ -76,9 +96,54 @@ static void *reader(void *arg) {
             stop = 1;
         } else if (n > 0) {
             emit(a->o, buf, n);
+            for (int i = 0; i < n; i++) {
+                tail[0] = tail[1];
+                tail[1] = tail[2];
+                tail[2] = (char)buf[i];
+            }
+            at_prompt = !memcmp(tail, "\n# ", 3);
+            last_rx_ms = now_ms();
         }
     }
     return NULL;
+}
+
+// Log a line and send it with the line ending. line needs 2 spare bytes.
+static void send_line(port *p, const term_opts *o, char *line, size_t len) {
+    if (o->log) {
+        char ts[32] = "";
+        if (o->timestamps) stamp(ts, sizeof ts);
+        fprintf(o->log, "%s> %.*s\n", ts, (int)len, line);
+        fflush(o->log);
+    }
+    size_t eol = strlen(o->eol);
+    memcpy(line + len, o->eol, eol); // fits: callers leave 2 bytes, eol <= 2
+    if (p->write(p, (unsigned char *)line, (int)(len + eol)) < 0)
+        fprintf(stderr, "[nanoterm] write failed\n");
+}
+
+// Betaflight guard for one typed line: 1 = send it, 2 = send the held
+// line instead, 0 = send nothing. With allow_writes a changing command is
+// held in pending until the next line says "y".
+static int bf_allow(const term_opts *o, const char *line, size_t len, char *pending, size_t *pendlen) {
+    if (*pendlen) {
+        size_t n = *pendlen;
+        if (len == 1 && (line[0] == 'y' || line[0] == 'Y')) return 2;
+        *pendlen = 0;
+        fprintf(stderr, "[nanoterm] not sent: %.*s\n", (int)n, pending);
+        return 0;
+    }
+    if (bf_classify(line, len) != BF_WRITE) return 1;
+    if (!o->allow_writes) {
+        fprintf(stderr, "[nanoterm] read-only: '%.*s' would change the flight controller, not sent "
+                        "(start with -W to allow changes)\n", (int)len, line);
+        return 0;
+    }
+    memcpy(pending, line, len);
+    *pendlen = len;
+    fprintf(stderr, "[nanoterm] '%.*s' changes the flight controller. Props off? "
+                    "Type y + Enter to send it, anything else drops it.\n", (int)len, line);
+    return 0;
 }
 
 int term_run(port *p, const term_opts *o) {
@@ -97,15 +162,41 @@ int term_run(port *p, const term_opts *o) {
 
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
-    int stdin_open = 1;
-    char line[512];
-    size_t len = 0;
+    int stdin_open = !o->oneshot;
+    char line[512], pending[512];
+    size_t len = 0, pendlen = 0;
+
+    // One-shot stages: 0 = waiting for the first prompt, 1 = command sent,
+    // waiting for the prompt to come back.
+    int stage = 0;
+    if (o->betaflight) {
+        at_prompt = 0;
+        last_rx_ms = now_ms();
+        if (p->write(p, (const unsigned char *)"#", 1) < 0) stop = 1; // '#' enters the CLI
+    }
 
     while (!stop) {
         if (o->duration > 0) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
-            if (now.tv_sec - start.tv_sec >= o->duration) break;
+            if (now.tv_sec - start.tv_sec >= o->duration) {
+                if (o->oneshot) {
+                    fprintf(stderr, "\n[nanoterm] no CLI prompt within %d s -- is it a Betaflight board?\n",
+                            o->duration);
+                    device_error = 1;
+                }
+                break;
+            }
+        }
+        if (o->oneshot && prompt_ready()) {
+            if (stage == 1) break;
+            len = strlen(o->oneshot);
+            if (len > sizeof line - 2) len = sizeof line - 2;
+            memcpy(line, o->oneshot, len);
+            at_prompt = 0;
+            send_line(p, o, line, len);
+            len = 0;
+            stage = 1;
         }
         // Poll instead of blocking in fgets(): keeps the loop able to
         // notice stop/duration, and EOF on stdin doesn't end the session
@@ -128,16 +219,18 @@ int term_run(port *p, const term_opts *o) {
             continue;
         }
 
-        if (o->log) {
-            char ts[32] = "";
-            if (o->timestamps) stamp(ts, sizeof ts);
-            fprintf(o->log, "%s> %.*s\n", ts, (int)len, line);
-            fflush(o->log);
+        if (o->betaflight) {
+            int ok = bf_allow(o, line, len, pending, &pendlen);
+            if (ok == 2) {
+                memcpy(line, pending, pendlen);
+                len = pendlen;
+                pendlen = 0;
+            } else if (!ok) {
+                len = 0;
+                continue;
+            }
         }
-        size_t eol = strlen(o->eol);
-        memcpy(line + len, o->eol, eol); // fits: len <= sizeof line - 2, eol <= 2
-        if (p->write(p, (unsigned char *)line, (int)(len + eol)) < 0)
-            fprintf(stderr, "[nanoterm] write failed\n");
+        send_line(p, o, line, len);
         len = 0;
     }
 

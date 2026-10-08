@@ -129,6 +129,13 @@ int ch340_open(ch340 *c, int fd, char *err, size_t errlen) {
             ch340_close(c);
             return -1;
         }
+        struct libusb_device_descriptor d;
+        if (libusb_get_device_descriptor(libusb_get_device(c->dev), &d) == 0 &&
+            !(d.idVendor == VID && (d.idProduct == PID_CH340 || d.idProduct == PID_CH341))) {
+            snprintf(err, errlen, "not a CH340 (USB id %04x:%04x)", d.idVendor, d.idProduct);
+            ch340_close(c);
+            return -2;
+        }
     } else {
         if ((r = libusb_init(&c->ctx)) < 0) goto libusb_fail;
         c->dev = libusb_open_device_with_vid_pid(c->ctx, VID, PID_CH340);
@@ -136,7 +143,7 @@ int ch340_open(ch340 *c, int fd, char *err, size_t errlen) {
         if (!c->dev) {
             snprintf(err, errlen, "no CH340 board found (unplugged, or no permission -- see udev/99-ch340.rules)");
             ch340_close(c);
-            return -1;
+            return -2;
         }
         // Linux binds the ch341 driver (/dev/ttyUSB0); borrow the device
         // from it while we run, it gets it back on release.

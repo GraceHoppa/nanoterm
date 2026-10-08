@@ -97,6 +97,32 @@ arduino-cli compile -b arduino:avr:nano:cpu=atmega328 --output-dir build .
 nt -u build/PhoneControl.ino.hex -m -t     # then type: on
 ```
 
+## Betaflight flight controllers
+
+Plug a flight controller into the phone (USB-A to USB-C through an OTG
+adapter powers it most reliably) and read its setup from the Betaflight CLI.
+**Props off** whenever it's plugged in.
+
+```sh
+nt -C "diff all" -l fc-diff.txt   # save your settings, then exit
+nt -C status                      # one command, then exit
+nt -c                             # interactive CLI, read-only
+```
+
+It's **read-only by default**: `diff`, `dump`, `status`, `version`, `get`,
+`help`, `tasks`, and `serial`, `feature`, `resource`, `aux`, `profile` and
+the like typed on their own go through. Anything that would change the
+flight controller — `set`, `save`, `defaults`, `exit` (it reboots), a
+command with arguments that assigns something, or anything unknown — is
+not sent. `nt -c -W` allows changes, but holds each one until you type `y`.
+One-shot commands (`-C`) can only be read-only.
+
+The CLI stays open until you unplug the board. nanoterm doesn't send `exit`,
+because that reboots the FC. This works with flight controllers that show
+up as a USB serial (CDC ACM) device: STM32 and AT32 Betaflight/INAV boards.
+The same driver also gives a terminal (not upload) for boards with native
+USB, like the Leonardo, Pro Micro and RP2040.
+
 ## Linux
 
 ```sh
@@ -129,6 +155,10 @@ it exits.
 | `-U BAUD` | Bootloader speed: 115200 (default) or 57600 for Nanos sold as "old bootloader". |
 | `-m` | After uploading, stay connected as a terminal. |
 | `-v` | Print the upload byte by byte, with timings. |
+| **Betaflight** | |
+| `-c` | Betaflight CLI, read-only (see above). |
+| `-C CMD` | Run one read-only CLI command and exit. Add `-l FILE` to save the output. |
+| `-W` | With `-c`: allow changes, each confirmed with `y`. |
 | **Other** | |
 | `-q` | No `[nanoterm]` status lines. |
 | `-V`, `-h` | Version, help. |
@@ -170,7 +200,11 @@ from `termux-usb` itself when it exits.
   going silent on garbled input, flaky resets, a dead board, the wrong chip,
   corrupted read-back;
 - the CH340 baud-rate calculation (ported from the Linux driver) across
-  common speeds.
+  common speeds;
+- the Betaflight read-only guard: every read command passes, every
+  changing one (and anything unknown) is held back;
+- finding the serial interfaces in USB descriptors laid out like an STM32
+  Betaflight VCP, and refusing a CH340's.
 
 CI runs them with gcc and clang, under AddressSanitizer and UBSan. Uploads
 were tested on a real Nano (CH340, optiboot) from an Android phone in
@@ -178,8 +212,9 @@ Termux.
 
 ## Limitations
 
-- CH340/CH341 USB chips only. Boards with a different USB chip (genuine
-  Uno's ATmega16U2, FTDI, CP2102) aren't supported.
+- Upload: CH340/CH341 boards only. The terminal also works with USB CDC ACM
+  devices (flight controllers, native-USB boards); FTDI and CP2102 chips
+  aren't supported.
 - ATmega328(P) boards with optiboot or the old bootloader: Nano, Uno, Pro
   Mini. The old-bootloader path (`-U 57600`) follows the same protocol but
   hasn't been tried on a real old-bootloader board.
