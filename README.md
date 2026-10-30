@@ -54,7 +54,7 @@ In Termux:
 
 ```sh
 pkg install git
-git clone https://github.com/allextraszza1488/nanoterm
+git clone https://github.com/GraceHoppa/nanoterm
 cd nanoterm && ./termux/setup.sh
 ```
 
