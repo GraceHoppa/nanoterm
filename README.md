@@ -1,5 +1,7 @@
 # nanoterm
 
+[![ci](https://github.com/GraceHoppa/nanoterm/actions/workflows/ci.yml/badge.svg)](https://github.com/GraceHoppa/nanoterm/actions/workflows/ci.yml)
+
 **Program and talk to an Arduino Nano from an Android phone — no root, no
 PC.** Also works on Linux.
 
